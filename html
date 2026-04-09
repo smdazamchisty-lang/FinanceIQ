@@ -1,0 +1,165 @@
+import os
+import uvicorn
+import anthropic
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+from fastapi. middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# 1. SETUP & CONFIG
+load_dotenv()
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Replace with your key or set it in your environment
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "your_api_key_here")
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# 2. DATA MODELS
+class CalcReq(BaseModel):
+    income: float = 0
+    deductions: float = 0
+    monthly_sip: float = 0
+    years: int = 10
+    returns: float = 12
+    prompt: str = ""
+
+# 3. BACKEND LOGIC API
+@app.post("/api/tax")
+def calculate_tax(req: CalcReq):
+    taxable = max(0, req.income - req.deductions)
+    # Simplified India New Regime 2024-25
+    if req.income <= 700000: tax = 0
+    else:
+        tax = (taxable - 700000) * 0.15 # Rough average slab logic
+    total = tax * 1.04 # Cess
+    return {"total": round(total, 2), "takehome": round((req.income - total)/12, 2)}
+
+@app.post("/api/stock")
+def calculate_stock(req: CalcReq):
+    r = req.returns / 100 / 12
+    n = req.years * 12
+    fv = req.monthly_sip * (((1 + r)**n - 1) / r) * (1 + r)
+    return {"fv": round(fv, 2), "invested": req.monthly_sip * n}
+
+@app.post("/api/ai")
+def get_ai(req: CalcReq):
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-20250514", max_tokens=200,
+            messages=[{"role": "user", "content": req.prompt}]
+        )
+        return {"text": msg.content[0].text}
+    except:
+        return {"text": "AI logic requires a valid Anthropic API Key."}
+
+# 4. FRONTEND (React + Tailwind via CDN)
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>FinanceIQ — One File</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+        <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+        <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+        <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700&family=DM+Mono&display=swap" rel="stylesheet">
+        <style>
+            body { background: #0a0f1e; color: #e2e8f0; font-family: 'DM Mono', monospace; }
+            .font-head { font-family: 'Syne', sans-serif; }
+        </style>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="text/babel">
+            const { useState, useEffect } = React;
+
+            function App() {
+                const [tab, setTab] = useState('tax');
+                const [form, setForm] = useState({ income: 1200000, deductions: 150000, sip: 10000, years: 10, returns: 12 });
+                const [res, setRes] = useState(null);
+                const [ai, setAi] = useState("");
+
+                const calculate = async () => {
+                    const type = tab === 'tax' ? 'tax' : 'stock';
+                    const response = await fetch(`/api/${type}`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(form)
+                    });
+                    const data = await response.json();
+                    setRes(data);
+
+                    // Fetch AI Insight
+                    const prompt = `Finance advisor: ${tab} is ${tab === 'tax' ? data.total : data.fv}. Give 2 tips.`;
+                    const aiRes = await fetch('/api/ai', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ prompt })
+                    });
+                    const aiData = await aiRes.json();
+                    setAi(aiData.text);
+                };
+
+                useEffect(() => { calculate(); }, [tab]);
+
+                return (
+                    <div className="max-w-4xl mx-auto p-6">
+                        <header className="mb-10 text-center border-b border-slate-800 pb-6">
+                            <h1 className="text-4xl font-head font-bold text-white tracking-tighter">FINANCE<span className="text-cyan-400">IQ</span></h1>
+                            <div className="mt-4 flex justify-center gap-2">
+                                <button onClick={() => setTab('tax')} className={`px-6 py-2 rounded ${tab==='tax'?'bg-cyan-500 text-black font-bold':'bg-slate-800'}`}>TAX</button>
+                                <button onClick={() => setTab('stock')} className={`px-6 py-2 rounded ${tab==='stock'?'bg-cyan-500 text-black font-bold':'bg-slate-800'}`}>STOCKS</button>
+                            </div>
+                        </header>
+
+                        <div className="grid md:grid-cols-2 gap-8">
+                            <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-800">
+                                <h2 className="text-cyan-400 font-bold mb-4 uppercase text-xs">Inputs</h2>
+                                {tab === 'tax' ? (
+                                    <div className="space-y-4">
+                                        <input type="number" placeholder="Income" className="w-full bg-black p-3 rounded" value={form.income} onChange={e=>setForm({...form, income: +e.target.value})} />
+                                        <input type="number" placeholder="Deductions" className="w-full bg-black p-3 rounded" value={form.deductions} onChange={e=>setForm({...form, deductions: +e.target.value})} />
+                                    </div>
+                                ) : (
+                                    <div className="space-y-4">
+                                        <input type="number" placeholder="Monthly SIP" className="w-full bg-black p-3 rounded" value={form.sip} onChange={e=>setForm({...form, sip: +e.target.value})} />
+                                        <input type="number" placeholder="Years" className="w-full bg-black p-3 rounded" value={form.years} onChange={e=>setForm({...form, years: +e.target.value})} />
+                                    </div>
+                                )}
+                                <button onClick={calculate} className="w-full bg-cyan-500 text-black font-bold py-3 mt-6 rounded">CALCULATE</button>
+                            </div>
+
+                            <div>
+                                {res && (
+                                    <div className="space-y-6 animate-pulse-once">
+                                        <div className="bg-slate-800 p-8 rounded-2xl border border-cyan-500/20">
+                                            <p className="text-xs text-slate-500 uppercase">{tab === 'tax' ? 'Total Tax' : 'Corpus'}</p>
+                                            <h3 className="text-4xl font-bold text-white">₹{(res.total || res.fv).toLocaleString()}</h3>
+                                        </div>
+                                        <div className="p-4 bg-cyan-500/5 border border-cyan-500/20 rounded-xl">
+                                            <p className="text-cyan-400 text-[10px] font-bold uppercase mb-2 tracking-widest">✦ AI Coach</p>
+                                            <p className="text-sm text-slate-400 italic leading-relaxed">{ai}</p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<App />);
+        </script>
+    </body>
+    </html>
+    """
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)
